@@ -88,6 +88,19 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
     
     // Register cell classes
     [self.tableView registerClass:[QBImagePickerGroupCell class] forCellReuseIdentifier:@"GroupCell"];
+    
+    // Register a notification.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(didChangeAssetsLibrary:)
+                                                 name:ALAssetsLibraryChangedNotification
+                                               object:self.assetsLibrary];
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:ALAssetsLibraryChangedNotification
+                                                  object:self.assetsLibrary];
 }
 
 - (void)viewDidLoad
@@ -95,16 +108,13 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
     [super viewDidLoad];
     
     // View controller settings
-    self.title = NSLocalizedStringFromTableInBundle(@"title",
-                                                    @"QBImagePickerController",
-                                                    [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"QBImagePickerController" ofType:@"bundle"]],
-                                                    nil);
+    self.title = NSLocalizedStringFromTable(@"title", @"QBImagePickerController", nil);
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-
+    
     // Load assets groups
     [self loadAssetsGroupsWithTypes:self.groupTypes
                          completion:^(NSArray *assetsGroups) {
@@ -116,7 +126,6 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
     // Validation
     self.navigationItem.rightBarButtonItem.enabled = [self validateNumberOfSelections:self.selectedAssetURLs.count];
 }
-
 
 #pragma mark - Accessors
 
@@ -158,7 +167,7 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
 {
     // Delegate
     if (self.delegate && [self.delegate respondsToSelector:@selector(qb_imagePickerControllerDidCancel:)]) {
-		[self.delegate qb_imagePickerControllerDidCancel:self];
+        [self.delegate qb_imagePickerControllerDidCancel:self];
     }
 }
 
@@ -260,22 +269,56 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
     
     for (NSURL *selectedAssetURL in self.selectedAssetURLs) {
         __weak typeof(self) weakSelf = self;
+        
+        // Success block
+        void (^selectAsset)(ALAsset *) = ^(ALAsset *asset) {
+            [assets addObject:asset];
+            // Check if the loading finished
+            if (assets.count == weakSelf.selectedAssetURLs.count) {
+                // Delegate
+                if (self.delegate && [self.delegate respondsToSelector:@selector(qb_imagePickerController:didSelectAssets:)]) {
+                    [self.delegate qb_imagePickerController:self didSelectAssets:[assets copy]];
+                }
+            }
+        };
+        
         [self.assetsLibrary assetForURL:selectedAssetURL
                             resultBlock:^(ALAsset *asset) {
-                                // Add asset
-                                [assets addObject:asset];
                                 
-                                // Check if the loading finished
-                                if (assets.count == weakSelf.selectedAssetURLs.count) {
-                                    // Delegate
-                                    if (self.delegate && [self.delegate respondsToSelector:@selector(qb_imagePickerController:didSelectAssets:)]) {
-										[self.delegate qb_imagePickerController:self didSelectAssets:[assets copy]];
-                                    }
+                                // Success #1
+                                if (asset){
+                                    selectAsset(asset);
+                                    
+                                    // No luck, try another way
+                                } else {
+                                    
+                                    // Search in the Photo Stream Album
+                                    [self.assetsLibrary enumerateGroupsWithTypes:ALAssetsGroupPhotoStream
+                                                                      usingBlock:^(ALAssetsGroup *group, BOOL *stop)
+                                     {
+                                         [group enumerateAssetsWithOptions:NSEnumerationReverse usingBlock:^(ALAsset *result, NSUInteger index, BOOL *stop) {
+                                             if([result.defaultRepresentation.url isEqual:selectedAssetURL])
+                                             {
+                                                 selectAsset(result);
+                                                 *stop = YES;
+                                             }
+                                         }];
+                                     }
+                                                                    failureBlock:^(NSError *error) {
+                                                                        NSLog(@"Error: %@", [error localizedDescription]);
+                                                                    }];
                                 }
+                                
                             } failureBlock:^(NSError *error) {
                                 NSLog(@"Error: %@", [error localizedDescription]);
                             }];
     }
+}
+
+- (void)clear
+{
+    [self.selectedAssetURLs removeAllObjects];
+    [self.navigationController popToRootViewControllerAnimated:NO];
 }
 
 
@@ -344,7 +387,7 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
     } else {
         // Delegate
         if (self.delegate && [self.delegate respondsToSelector:@selector(qb_imagePickerController:didSelectAsset:)]) {
-			[self.delegate qb_imagePickerController:self didSelectAsset:asset];
+            [self.delegate qb_imagePickerController:self didSelectAsset:asset];
         }
     }
 }
@@ -364,6 +407,25 @@ ALAssetsFilter * ALAssetsFilterFromQBImagePickerControllerFilterType(QBImagePick
 - (void)assetsCollectionViewControllerDidFinishSelection:(QBAssetsCollectionViewController *)assetsCollectionViewController
 {
     [self passSelectedAssetsToDelegate];
+}
+
+
+#pragma mark - Notification
+
+- (void)didChangeAssetsLibrary:(NSNotification *)notification
+{
+    [self.navigationController popToRootViewControllerAnimated:YES];
+    
+    // Load assets groups
+    [self loadAssetsGroupsWithTypes:self.groupTypes
+                         completion:^(NSArray *assetsGroups) {
+                             self.assetsGroups = assetsGroups;
+                             
+                             [self.tableView reloadData];
+                         }];
+    
+    // Validation
+    self.navigationItem.rightBarButtonItem.enabled = [self validateNumberOfSelections:self.selectedAssetURLs.count];
 }
 
 @end
